@@ -1,0 +1,178 @@
+import openai
+import requests
+import json
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
+from datetime import datetime, timedelta
+
+mypassword = "vzrkmamcrvoahtbl"
+
+def get_weather(api_key, lat, lon):
+    base_url = "https://api.openweathermap.org/data/2.5/forecast"
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "appid": api_key,
+        "units": "imperial"
+    }
+
+    response = requests.get(base_url, params=params)
+
+    if response.status_code == 200:
+        data = response.json()
+        forecasts = data['list']
+        ten_hour_forecasts = forecasts[:4]
+
+        weather_details_list = []
+        for forecast in ten_hour_forecasts:
+            date, time = forecast['dt_txt'].split()
+            datetime_object = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M:%S")
+            datetime_object = datetime_object - timedelta(hours=5)  # convert UTC to CDT
+            time = datetime_object.strftime("%I:%M %p")  # convert to 12-hour format
+            pop = forecast.get('pop', 0)
+            
+            weather_details = {
+                "main": forecast['weather'][0]['main'],
+                "temp": forecast['main']['temp'],
+                "wind_speed": forecast['wind']['speed'],
+                "forecast_time": f"{date} {time}",
+                "pop": pop  
+            }
+            weather_details_list.append(weather_details)
+
+        return weather_details_list
+
+    else:
+        return response.status_code
+
+
+
+def select_image(weather_forecasts):
+    max_wind_speed = max([forecast['wind_speed'] for forecast in weather_forecasts])
+    max_temp = max([forecast['temp'] for forecast in weather_forecasts])
+    min_temp = min([forecast['temp'] for forecast in weather_forecasts])
+    weather_mains = [forecast['main'].lower() for forecast in weather_forecasts]
+
+    image_files = []
+    if max_wind_speed >= 20:
+        image_files.append('Windy_Rob.jpg')
+    if max_temp > 90:
+        image_files.append('Hot_Rob.jpg')
+    if 'rain' in weather_mains:
+        image_files.append('Rainy_Rob.jpg')
+    if 'snow' in weather_mains or min_temp < 40:
+        image_files.append('Snowy_Rob.jpg')
+    if not image_files:
+        image_files.append('Perfect_Rob.jpg')
+
+    return image_files
+
+
+
+def send_email(weather_message, image_files):
+    fromaddr = "sfrazier.automate@gmail.com"
+    
+    toaddrs = ["samuelfrazier1992@gmail.com", 
+              "Provostluke92@gmail.com", 
+              "jordanwardoin@gmail.com",
+              "rodneygaubert@yahoo.com",
+              "nayfrazzier@gmail.com",
+              "nomadguy8@gmail.com",              
+              "corymichaelmurray@gmail.com"]  # List of email addresses    
+    
+    
+    
+    #toaddrs = ["samuelfrazier1992@gmail.com",
+    #            "tacan11760@msback.com"]  # TESTING addresses
+                
+                
+    password = mypassword
+
+    try:
+        mailServer = smtplib.SMTP("smtp.gmail.com", 587)
+        mailServer.ehlo()
+        mailServer.starttls()
+        mailServer.login(fromaddr, password)
+        
+        msg = MIMEMultipart()
+        msg['From'] = fromaddr
+        msg['To'] = ", ".join(toaddrs)
+        msg['Subject'] = "Rob Perillo's Golf Weather Outlook"
+
+        body = MIMEText(f'<b>{weather_message}</b>', 'html')
+        msg.attach(body)
+        
+        for image_file in image_files:
+            with open(f'src/images/{image_file}', 'rb') as file:
+                img = MIMEImage(file.read())
+            
+            img.add_header('Content-ID', f'<{image_file}>')
+            msg.attach(img)
+        
+        text = msg.as_string()
+        for toaddr in toaddrs:
+            mailServer.sendmail(fromaddr, toaddr, text)
+        mailServer.quit()
+        print("Email sent successfully.")
+    except Exception as e:
+        print(f"Failed to send email: {str(e)}")
+
+
+
+
+def lambda_handler(event, context):
+    lat = 30.2241
+    lon = -92.0198
+    api_key = "4253c0c53b626a8a39a3051f963a6cdd"
+
+    weather_info = get_weather(api_key, lat, lon)
+    image_files = select_image(weather_info)
+
+    openai.api_key = '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'
+    weather_email_message = ""
+
+    messages = []
+
+    # Weatherman intro
+    messages.append({"role": "system", "content": "You are a famous Cajun, Lafayette Weather Man named Rob Perillo, who is also a damned good golfer, and you know it. You are gruff and a little ornery. You only talk about how the weather relates to playing golf for the day."})
+    messages.append({"role": "user", "content": "Give a concise weatherman intro directed towards golfers seeking golf weather outlook in Lafayette Louisiana, but do not list any weather."})
+
+    responseIntro = openai.ChatCompletion.create(
+        model = "gpt-3.5-turbo-16k",
+        messages = messages
+    )
+    print(responseIntro["choices"][0]["message"]["content"] + "\n")
+    weather_email_message += responseIntro["choices"][0]["message"]["content"] + "<br><br>---<br><br>"
+
+    # Weather description for each hour
+    for i in range(len(weather_info)):
+        weather_data_for_gpt = json.dumps(weather_info[i], indent=4)
+
+        messages = [] # Reset the messages list for each hour's weather
+        messages.append({"role": "system", "content": f"Here is the weather data for today: {weather_data_for_gpt}"})
+        messages.append({"role": "user", "content": "Concisely describe what golf would be like in this weather, using the exact times from the weather data."})
+
+        response = openai.ChatCompletion.create(
+            model = "gpt-3.5-turbo-16k",
+            messages = messages
+        )
+
+        print(response["choices"][0]["message"]["content"] + "\n")
+        weather_email_message += response["choices"][0]["message"]["content"] + "<br><br>---<br><br>"
+
+    # Weatherman outro
+    messages = [] # Reset the messages list for the outro
+    messages.append({"role": "system", "content": "You are a famous Cajun, Lafayette Weather Man named Rob Perillo, who is also a damned good golfer, and you know it. You are gruff and a little ornery. Now that we have completed our forecasts and golf outlooks, it's time to wrap up."})
+    messages.append({"role": "user", "content": "Conclude which hour today would be the most ideal for golf in Lafayette, and then give a concise, quirky cajun weatherman outro."})
+
+    responseOutro = openai.ChatCompletion.create(
+        model = "gpt-3.5-turbo-16k",
+        messages = messages
+    )
+
+    print("Conclusion: " + responseOutro["choices"][0]["message"]["content"] + "\n")
+    weather_email_message += "Conclusion: " + responseOutro["choices"][0]["message"]["content"] + "<br><br>---<br><br>"
+
+    send_email(weather_email_message, image_files)
